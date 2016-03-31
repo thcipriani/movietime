@@ -24,11 +24,12 @@
   "bin": "bin/torrentcast",
   "license": "MIT",
   "dependencies": {
-    "read-torrent": "^1.0.0",
     "body-parser": "^1.0.2",
-    "peerflix": "^0.8.6",
-    "node-uuid": "^1.4.1",
     "express": "^4.1.1",
-    "omxctrl": "^0.1.2"
+    "node-uuid": "^1.4.1",
+    "omxctrl": "^0.1.2",
+    "peerflix": "^0.8.6",
+    "read-torrent": "^1.0.0",
+    "request": "^2.69.0"
   }
 }

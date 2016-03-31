@@ -7,6 +7,7 @@ var readTorrent = require('read-torrent'),
   omx = require('omxctrl'),
   path = require('path'),
   fs = require('fs'),
+  request = require('request'),
   engine;
 
 var STATES = ['PLAYING', 'PAUSED', 'IDLE'];
@@ -28,6 +29,8 @@ var mappings = {
   '/fastforward': 'seekFastForward',
   '/fastbackward': 'seekFastBackward'
 };
+
+var magnetRegex = /href="(magnet:\?xt=urn:btih:(.{40})[^"]*)"/m
 
 app.use(bodyParser());
 
@@ -52,24 +55,62 @@ var clearTempFiles = function() {
   });
 };
 
+var buildBookmarklet = function(req, res) {
+    var body = [
+        "javascript:location.href='http://",
+        req.headers.host,
+        "/bmplay?page='",
+        '+encodeURIComponent(location.href)'
+    ];
+    return body.join('');
+};
+
+var findMagnet = function(get, callback) {
+    var page = get.req.query.page;
+
+    if (page.substring(0, 'http'.length) !== 'http')
+        get.res.send(400, { error: 'not a page' });
+
+    request.get(page, function(error, res, html) {
+        var match;
+        if (error) get.res.send(400, { error: 'Couldn\'t grab page ' + page });
+
+        match = html.match(magnetRegex);
+
+        if (match) {
+            playTorrent(get.req, get.res, match[1]);
+        } else {
+            get.res.send(400, { error: 'Couldn\'t grab magnet' + page });
+        }
+    });
+};
+
+var playTorrent = function(req, res, torrent) {
+    readTorrent(torrent, function(err, torrent) {
+      if (err) return res.send(400, { error: 'torrent link could not be parsed' });
+      if (engine) stop();
+      clearTempFiles();
+
+      engine = peerflix(torrent, {
+        connections: 100,
+        path: createTempFilename(),
+        buffer: (1.5 * 1024 * 1024).toString()
+      });
+
+      engine.server.on('listening', function() {
+        omx.play('http://127.0.0.1:' + engine.server.address().port + '/');
+        res.send(200);
+      });
+    });
+};
+
 app.post('/play', function(req, res) {
   if (!req.body.url) return res.send(400, { error: 'torrent url missung' });
-  readTorrent(req.body.url, function(err, torrent) {
-    if (err) return res.send(400, { error: 'torrent link could not be parsed' });
-    if (engine) stop();
-    clearTempFiles();
+  playTorrent(req, res, req.body.url);
+});
 
-    engine = peerflix(torrent, {
-      connections: 100,
-      path: createTempFilename(),
-      buffer: (1.5 * 1024 * 1024).toString()
-    });
-
-    engine.server.on('listening', function() {
-      omx.play('http://127.0.0.1:' + engine.server.address().port + '/');
-      res.send(200);
-    });
-  });
+app.get('/bmplay', function(req, res) {
+    findMagnet({'req': req, 'res': res}, playTorrent)
 });
 
 app.post('/stop', function(req, res) {
@@ -79,6 +120,10 @@ app.post('/stop', function(req, res) {
 
 app.get('/state', function(req, res) {
   res.send(200, STATES[omx.getState()]);
+});
+
+app.get('/bookmarklet', function(req, res) {
+  res.send(200, buildBookmarklet(req, res));
 });
 
 for (var route in mappings) {
