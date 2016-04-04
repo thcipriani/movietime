@@ -1,5 +1,6 @@
 var readTorrent = require('read-torrent'),
   bodyParser = require('body-parser'),
+  cheerio = require('cheerio'),
   tempDir = require('os').tmpdir(),
   peerflix = require('peerflix'),
   uuid = require('node-uuid'),
@@ -10,27 +11,9 @@ var readTorrent = require('read-torrent'),
   request = require('request'),
   engine;
 
-var STATES = ['PLAYING', 'PAUSED', 'IDLE'];
 var PORT = process.argv[2] || 9090;
 
-var mappings = {
-  '/pause': 'pause',
-  '/speedup': 'increaseSpeed',
-  '/speeddown': 'decreaseSpeed',
-  '/nextaudio': 'nextAudioStream',
-  '/prevaudio': 'previousAudioStream',
-  '/nextsubtitle': 'nextSubtitleStream',
-  '/prevsubtitle': 'previousSubtitleStream',
-  '/togglesubtitle': 'toggleSubtitles',
-  '/volumeup': 'increaseVolume',
-  '/volumedown': 'decreaseVolume',
-  '/forward': 'seekForward',
-  '/backward': 'seekBackward',
-  '/fastforward': 'seekFastForward',
-  '/fastbackward': 'seekFastBackward'
-};
-
-var magnetRegex = /href="(magnet:\?xt=urn:btih:(.{40})[^"]*)"/m
+var magnetRegex = /(magnet:\?xt=urn:btih:(.{40}).*)/
 
 app.use(bodyParser());
 
@@ -44,40 +27,49 @@ var createTempFilename = function() {
   return path.join(tempDir, 'torrentcast_' + uuid.v4());
 };
 
-var clearTempFiles = function() {
-  fs.readdir(tempDir, function(err, files) {
-    if (err) return;
-    files.forEach(function(file) {
-      if (file.substr(0, 11) === 'torrentcast') {
-        fs.rmdir(path.join(tempDir, file));
-      }
-    });
-  });
-};
-
 var buildBookmarklet = function(req, res) {
     var body = [
+        '<!doctype html>',
+        '<head>',
+        '<title>MovieTime</title>',
+        '</head><body>',
+        '<h1>MovieTime Bookmarklet</h1>',
+        '<textarea>',
         "javascript:location.href='http://",
         req.headers.host,
-        "/bmplay?page='",
-        '+encodeURIComponent(location.href)'
+        "/play?page='",
+        '+encodeURIComponent(location.href)',
+        '</textarea></body></html>'
     ];
     return body.join('');
 };
 
 var findMagnet = function(get, callback) {
-    var page = get.req.query.page;
+    var page = get.req.query.page,
+        requestSettings = {
+           method: 'GET',
+           url: page,
+           gzip: true
+        };
 
     if (page.substring(0, 'http'.length) !== 'http')
         get.res.send(400, { error: 'not a page' });
 
-    request.get(page, function(error, res, html) {
-        var match;
+    request.get(requestSettings, function(error, res, html) {
+        var match, $;
         if (error) get.res.send(400, { error: 'Couldn\'t grab page ' + page });
+        console.log('Grabbed HTML');
 
-        match = html.match(magnetRegex);
+        $ = cheerio.load(html);
+        $('a').each(function(i, elem) {
+            var str = $(this).attr('href');
+            if (match) return false;
+            if (!str) return;
+            match = str.match(magnetRegex)
+        });
 
         if (match) {
+            console.log('Found Magnetlink: ' + match[1]);
             playTorrent(get.req, get.res, match[1]);
         } else {
             get.res.send(400, { error: 'Couldn\'t grab magnet' + page });
@@ -89,12 +81,11 @@ var playTorrent = function(req, res, torrent) {
     readTorrent(torrent, function(err, torrent) {
       if (err) return res.send(400, { error: 'torrent link could not be parsed' });
       if (engine) stop();
-      clearTempFiles();
 
       engine = peerflix(torrent, {
         connections: 100,
         path: createTempFilename(),
-        buffer: (1.5 * 1024 * 1024).toString()
+        buffer: (3 * 1024 * 1024).toString()
       });
 
       engine.server.on('listening', function() {
@@ -104,38 +95,34 @@ var playTorrent = function(req, res, torrent) {
     });
 };
 
-app.post('/play', function(req, res) {
-  if (!req.body.url) return res.send(400, { error: 'torrent url missung' });
-  playTorrent(req, res, req.body.url);
-});
-
-app.get('/bmplay', function(req, res) {
+app.get('/play', function(req, res) {
     findMagnet({'req': req, 'res': res}, playTorrent)
 });
 
-app.post('/stop', function(req, res) {
-  stop();
-  res.send(200);
-});
-
-app.get('/state', function(req, res) {
-  res.send(200, STATES[omx.getState()]);
-});
-
 app.get('/bookmarklet', function(req, res) {
-  res.send(200, buildBookmarklet(req, res));
+    res.setHeader('content-type', 'text/html');
+    res.send(200, buildBookmarklet(req, res));
 });
 
-for (var route in mappings) {
-  (function(method) {
-    app.post(route, function(req, res) {
-      omx[method]();
-      res.send(200);
+/**
+ * Listen for keys, want to be able to use the keyboard
+ *
+ * http://stackoverflow.com/a/30687420
+ */
+var keyListen = function() {
+    var stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    stdin.on('data', function(key) {
+        process.stdout.write('Sending "' + key + '" to omxplayer\n');
+        omx.send(key);
+        if (key == '\u0003') { process.exit(); } //ctrl-c
     });
-  })(mappings[route]);
-}
+};
 
 module.exports = function() {
-  console.log('torrentcast running on port', PORT);
+  console.log('movietime running on port', PORT);
   app.listen(PORT);
+  keyListen();
 };
